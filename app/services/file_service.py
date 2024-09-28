@@ -11,11 +11,10 @@ def decode_content(contents: bytes) -> str:
         return contents.decode('ISO-8859-1')
     
 async def check_file_exists(filename: str, db):
-    if await db['file_history'].find_one({"file_name": filename}):
+    if await db['files'].find_one({"Filename": filename}):
         raise HTTPException(status_code=400, detail="O arquivo já foi enviado anteriormente.")
 
 def parse_csv_content(decoded_content: str) -> pd.DataFrame:
-    """Parses the CSV content based on the file's first line."""
     initial_lines = decoded_content.splitlines()[:2]
     header = 0 if "RptDt" in initial_lines[0] else 1
     return pd.read_csv(StringIO(decoded_content), sep=";", header=header, na_filter=False, low_memory=False)
@@ -28,15 +27,11 @@ def parse_excel_content(file_content: bytes) -> pd.DataFrame:
 async def save_data_to_mongo(db, data: list):
     collection = db['files']
     batch_size = 1000
+
     for i in range(0, len(data), batch_size):
         batch = data[i:i + batch_size]
         await collection.insert_many(batch)
 
-async def registry_file_upload(db, filename: str):
-    await db['file_history'].insert_one({
-        "file_name": filename,
-        "upload_date": datetime.now().strftime("%Y-%m-%d %H:%M:%S")
-    })
 
 async def save_file(file: UploadFile):
     if not file:
@@ -64,11 +59,39 @@ async def save_file(file: UploadFile):
         raise HTTPException(status_code=400, detail="Formato de arquivo não suportado.")
     
    # Converte os dados e salva no MongoDB
+    df["Filename"] = file.filename
+    df["Upload_date"] = datetime.now().strftime("%Y-%m-%d")
     data = df.to_dict(orient='records')
     try:
         await save_data_to_mongo(db, data)
-        await registry_file_upload(db, file.filename)
-
         return {"detail": "Arquivo enviado e dados salvos com sucesso."}
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"Erro ao salvar dados no MongoDB: {str(e)}")  
+
+async def paginate(page: int, page_size: int):
+    pipeline = [ 
+        {"$sort": {"RptDt": -1}},      
+        {"$skip": (page - 1) * page_size},
+        {"$limit": page_size},      
+        {"$project": {"_id": 0, "Filename": 0, "Upload_date": 0}} 
+    ]
+
+    result =  db["files"].aggregate(pipeline)
+
+    total_documents = await  db["files"].count_documents({})
+    total_pages = (total_documents + page_size - 1) // page_size
+    
+    return {
+        "current_page": page,
+        "total_pages": total_pages,
+        "page_size": page_size,
+        "data": await result.to_list(length=page_size)
+    }
+
+async def get_files(page: int, page_size: int):
+    try:
+        #paginar consulta
+        result = await paginate(page, page_size)
+        return result
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e)) 
