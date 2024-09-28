@@ -1,29 +1,27 @@
 version: "3.8"
 
 services:
+  api:
+    container_name: api_financehub
+    build:
+      context: .
+      dockerfile: Dockerfile
+    image: api_financehub
+    ports:
+      - 3000:8000
+    depends_on:
+      - mongodb
+    networks:
+      - network-financehub
+
   mongodb:
-    image: mongo:latest
-    container_name: mongodb-financeHub
-    MONGO_INITDB_ROOT_USERNAME: admin
-    MONGO_INITDB_ROOT_PASSWORD: abc123
+    image: mongo:5.0
+    container_name: mongodb_financehub
     ports:
       - 27017:27017
     networks:
-      - network-financeHub
-    volumes:
-      - ./mongo-data:/data/db
-
-  server:
-    container_name: api-financeHub
-    image: api-financeHub:latest
-    build: .
-    ports:
-      - "5000:5000"
-    depends_on:
-      - mongo
-    networks:
-      - network-financeHub
+      - network-financehub
 
 networks:
-  network-financeHub:
+  network-financehub:
     driver: bridge
