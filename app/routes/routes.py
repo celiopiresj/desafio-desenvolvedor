@@ -1,7 +1,11 @@
-from fastapi import APIRouter, UploadFile, File, Request
+from fastapi import APIRouter, UploadFile, File, Query
 from fastapi.responses import JSONResponse, RedirectResponse
-from typing import Dict
-from services.file_service import save_file, get_files, get_files_by_name, get_files_by_upload_date, get_files_by_fields
+from model.model import FilterParams
+from typing import Dict, Annotated
+from services.file_service import save_file, get_files, get_files_by_name, get_files_by_upload_date, get_files_by_fields, delete_file_by_filename
+
+from pydantic import BaseModel, Field
+from typing_extensions import Annotated, Literal
 
 router = APIRouter()
 
@@ -39,6 +43,12 @@ async def get_file_by_upload_date(upload_date: str, include_content: bool = Fals
 
 
 @router.get("/files/fields", status_code=200)
-async def get_file_by_fields(fields: Dict[str, str]):
+async def get_file_by_fields(fields:  Annotated[FilterParams, Query()]):
     results = await get_files_by_fields(fields)
     return {"file": results}
+
+
+@router.delete("/files/{filename}", status_code=204)
+async def delete_file(filename: str):
+    result = await delete_file_by_filename(filename)
+    return {"file": result}

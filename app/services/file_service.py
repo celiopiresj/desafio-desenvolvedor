@@ -6,6 +6,8 @@ from typing import Dict
 import pandas as pd
 from datetime import datetime
 from database.database import db
+from model.model import FilterParams
+from middlewares.error_handler import error_handler
 
 
 def _decode_content(contents: bytes) -> str:
@@ -57,8 +59,7 @@ async def _save_file_to_db(db, data: list):
     try:
         await _save_data_to_mongo(db, data)
     except Exception as e:
-        raise HTTPException(
-            status_code=500, detail=f"Erro ao salvar dados no MongoDB: {str(e)}")
+        error_handler(e, "Erro ao salvar dados no MongoDB")
 
 
 def convert_to_date(value):
@@ -303,12 +304,58 @@ async def filter_files_by_upload_date(upload_date: str):
     return await _format_filtered_files(files)
 
 
+async def paginate_file_by_fields(fields: Dict[str, str], page: int, page_size: int):
+    try:
+        match_stage = {k: format_date(
+            k, v) for k, v in fields.items() if v not in ("", None)}
+
+        pipeline = [
+            {"$match": match_stage},
+            {"$sort": {"RptDt": -1}},
+            {"$skip": (page - 1) * page_size},
+            {"$limit": page_size},
+            {"$project": {"_id": 0, "Filename": 0, "Upload_date": 0}}
+        ]
+
+        result = await _get_aggregated_data(pipeline, page_size)
+        total_documents = await _count_documents()
+        total_pages = _calculate_total_pages(total_documents, page_size)
+
+        return {
+            "current_page": page,
+            "total_pages": total_pages,
+            "page_size": page_size,
+            "data": format_fields(result)
+        }
+    except Exception as e:
+        raise HTTPException(
+            status_code=500, detail=f"Erro ao paginar arquivos por campos: {str(e)}")
+
+
+async def filter_files_by_fields(fields: Dict[str, str]):
+    try:
+        match_stage = {k: format_date(
+            k, v) for k, v in fields.items() if v not in ("", None)}
+
+        pipeline = [
+            {"$match": match_stage},
+            {"$project": {"_id": 0, "Filename": 0, "Upload_date": 0}}
+        ]
+
+        result = await _get_aggregated_data(pipeline)
+        return {
+            "data": format_fields(result)
+        }
+    except Exception as e:
+        raise HTTPException(
+            status_code=500, detail=f"Erro ao filtrar arquivos por campos: {str(e)}")
+
+
 async def get_files(page: int, page_size: int):
     try:
         return await paginate_files(page, page_size)
     except Exception as e:
-        raise HTTPException(
-            status_code=500, detail=f"Erro ao buscar arquivos: {str(e)}")
+        error_handler(e, "Erro ao buscar arquivos")
 
 
 async def get_files_by_name(filename: str, include_content: bool, page: int, page_size: int,  paginate: bool, exact_match: bool):
@@ -334,8 +381,7 @@ async def get_files_by_name(filename: str, include_content: bool, page: int, pag
 
         return result
     except Exception as e:
-        raise HTTPException(
-            status_code=500, detail=f"Erro ao buscar arquivos por nome: {str(e)}")
+        error_handler(e, "Erro ao buscar arquivos por nome")
 
 
 async def get_files_by_upload_date(upload_date: str, include_content: bool, page: int, page_size: int, paginate: bool):
@@ -359,17 +405,48 @@ async def get_files_by_upload_date(upload_date: str, include_content: bool, page
 
         return result
     except Exception as e:
-        raise HTTPException(
-            status_code=500, detail=f"Erro ao buscar arquivos por data de upload: {str(e)}")
+        error_handler(e, "Erro ao buscar arquivos por data de upload")
 
 
-async def get_files_by_fields(fields: Dict[str, str], page: int, page_size: int, paginate: bool):
+async def get_files_by_fields(fields: FilterParams):
     try:
+        filters = {key: value for key, value in fields.dict().items()
+                   if value is not None}
+
+        # Extrair parâmetros de paginação
+        paginate = filters.pop("paginate", True)
+        page = filters.pop("page", 1)
+        page_size = filters.pop("page_size", 10)
+
+        if len(filters) == 0:
+            raise HTTPException(
+                status_code=400, detail="Nenhum campo foi passado.")
+
         if paginate:
-            result = await paginate_file_by_fields(fields, page, page_size)
+            result = await paginate_file_by_fields(filters, page, page_size)
         else:
-            result = await filter_files_by_fields(fields)
+            result = await filter_files_by_fields(filters)
 
         return result
     except Exception as e:
-        raise HTTPException(status_code=500, detail=str(e))
+        error_handler(e, "Erro ao buscar dados")
+
+
+async def delete_file_by_filename(filename: str):
+    try:
+        exist = await db["files"].find_one({"Filename": filename})
+
+        if exist is not None:
+            result = await db["files"].delete_many({"Filename": filename})
+
+            if result.deleted_count == 0:
+                raise HTTPException(
+                    status_code=404, detail="Documento não encontrado")
+
+            return {"message": "Documento deletado com sucesso"}
+        else:
+            raise HTTPException(
+                status_code=400, detail="Arquivo não existe.")
+
+    except Exception as e:
+        error_handler(e, "Erro ao deletar arquivo")
