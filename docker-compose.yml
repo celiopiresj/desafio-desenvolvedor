@@ -11,8 +11,6 @@ services:
       - 3000:8000
     depends_on:
       - mongodb
-    volumes:
-      - ./app:/app
     networks:
       - network-financehub
 
