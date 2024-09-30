@@ -11,6 +11,7 @@ Para executar o FinanceHub API, você precisa ter o Docker e o Docker Compose in
    ```bash
    git clone https://github.com/celiopiresj/desafio-desenvolvedor.git financehub-api
    cd financehub-api
+   git checkout origin/celio-pires-junior
    ```
 
 2. Construa e inicie os containers:
