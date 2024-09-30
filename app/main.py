@@ -1,5 +1,4 @@
 from fastapi import FastAPI
-from fastapi.responses import RedirectResponse
 from routes.routes import router as routes
 from database.database import startup_db, shutdown_db
 # from config.database import create_collection
@@ -17,11 +16,3 @@ async def startup_event():
 @app.on_event("shutdown")
 async def shutdown_event():
     await shutdown_db()
-
-
-@app.get("/")
-def read_root():
-    """
-    Fetch a single recipe by ID
-    """
-    return RedirectResponse("/redoc")

@@ -143,35 +143,42 @@ def format_fields(data_list):
 
 
 async def get_distinct_fields(search_field: str, value: str, exact_match: bool = True):
-    print(value)
-    if exact_match:
-        match_stage = {search_field: format_date(search_field, value)}
-    else:
-        regex = Regex(f"^{value}", "i")
-        match_stage = {search_field: {"$regex": regex}}
+    try:
+        if exact_match:
+            match_stage = {search_field: format_date(search_field, value)}
+        else:
+            regex = Regex(f"^{value}", "i")
+            match_stage = {search_field: {"$regex": regex}}
 
-    pipeline = [
-        {"$match": match_stage},
-        {"$sort": {"Upload_date": -1}},
-        {"$group": {"_id": "$Filename", "upload_date": {"$first": "$Upload_date"}}},
-        {"$project": {"filename": "$_id", "_id": 0, "upload_date": {
-            "$dateToString": {
-                "format": "%Y-%m-%d",
-                "date": "$upload_date"
-            }
-        }}}
-    ]
+        pipeline = [
+            {"$match": match_stage},
+            {"$sort": {"Upload_date": -1}},
+            {"$group": {"_id": "$Filename", "upload_date": {"$first": "$Upload_date"}}},
+            {"$project": {"filename": "$_id", "_id": 0, "upload_date": {
+                "$dateToString": {
+                    "format": "%Y-%m-%d",
+                    "date": "$upload_date"
+                }
+            }}}
+        ]
 
-    result = await db["files"].aggregate(pipeline).to_list()
-    return result
+        result = await db["files"].aggregate(pipeline).to_list()
+        return result
+    except Exception as e:
+        raise HTTPException(
+            status_code=500, detail=f"Erro ao buscar campos distintos: {str(e)}")
 
 
 async def _get_files_by_field(field: str, value: str, exact_match: bool = True):
-    return await get_distinct_fields(
-        search_field=field,
-        value=value,
-        exact_match=exact_match
-    )
+    try:
+        return await get_distinct_fields(
+            search_field=field,
+            value=value,
+            exact_match=exact_match
+        )
+    except Exception as e:
+        raise HTTPException(
+            status_code=500, detail=f"Erro ao buscar arquivos por campo: {str(e)}")
 
 
 def _build_pagination_pipeline(filename: str, page: int, page_size: int):
@@ -185,14 +192,22 @@ def _build_pagination_pipeline(filename: str, page: int, page_size: int):
 
 
 async def _get_aggregated_data(pipeline: list, length: int = None):
-    return await db["files"].aggregate(pipeline).to_list(length=length)
+    try:
+        return await db["files"].aggregate(pipeline).to_list(length=length)
+    except Exception as e:
+        raise HTTPException(
+            status_code=500, detail=f"Erro ao agregar dados: {str(e)}")
 
 
 async def _count_documents(filename: str = None):
-    query = {}
-    if filename:
-        query["Filename"] = filename
-    return await db["files"].count_documents(query)
+    try:
+        query = {}
+        if filename:
+            query["Filename"] = filename
+        return await db["files"].count_documents(query)
+    except Exception as e:
+        raise HTTPException(
+            status_code=500, detail=f"Erro ao contar documentos: {str(e)}")
 
 
 def _calculate_total_pages(total_documents: int, page_size: int):
@@ -200,23 +215,27 @@ def _calculate_total_pages(total_documents: int, page_size: int):
 
 
 async def _paginate_and_format_files(files: list, page: int, page_size: int):
-    for index, file in enumerate(files):
-        pipeline = _build_pagination_pipeline(
-            file["filename"], page, page_size)
-        result = await _get_aggregated_data(pipeline, page_size)
+    try:
+        for index, file in enumerate(files):
+            pipeline = _build_pagination_pipeline(
+                file["filename"], page, page_size)
+            result = await _get_aggregated_data(pipeline, page_size)
 
-        total_documents = await _count_documents(file["filename"])
-        total_pages = _calculate_total_pages(total_documents, page_size)
+            total_documents = await _count_documents(file["filename"])
+            total_pages = _calculate_total_pages(total_documents, page_size)
 
-        files[index]["total_pages"] = total_pages
-        files[index]["data"] = format_fields(result)
+            files[index]["total_pages"] = total_pages
+            files[index]["data"] = format_fields(result)
 
-    return {
-        "files_found": len(files),
-        "current_page": page,
-        "page_size": page_size,
-        "result": files
-    }
+        return {
+            "files_found": len(files),
+            "current_page": page,
+            "page_size": page_size,
+            "result": files
+        }
+    except Exception as e:
+        raise HTTPException(
+            status_code=500, detail=f"Erro ao paginar e formatar arquivos: {str(e)}")
 
 
 def _build_filter_pipeline(filename: str):
@@ -227,16 +246,20 @@ def _build_filter_pipeline(filename: str):
 
 
 async def _format_filtered_files(files: list):
-    for index, file in enumerate(files):
-        pipeline = _build_filter_pipeline(file["filename"])
-        result = await _get_aggregated_data(pipeline)
+    try:
+        for index, file in enumerate(files):
+            pipeline = _build_filter_pipeline(file["filename"])
+            result = await _get_aggregated_data(pipeline)
 
-        files[index]["data"] = format_fields(result)
+            files[index]["data"] = format_fields(result)
 
-    return {
-        "files_found": len(files),
-        "result": files
-    }
+        return {
+            "files_found": len(files),
+            "result": files
+        }
+    except Exception as e:
+        raise HTTPException(
+            status_code=500, detail=f"Erro ao formatar arquivos filtrados: {str(e)}")
 
 
 async def paginate_files(page: int, page_size: int):
@@ -284,7 +307,8 @@ async def get_files(page: int, page_size: int):
     try:
         return await paginate_files(page, page_size)
     except Exception as e:
-        raise HTTPException(status_code=500, detail=str(e))
+        raise HTTPException(
+            status_code=500, detail=f"Erro ao buscar arquivos: {str(e)}")
 
 
 async def get_files_by_name(filename: str, include_content: bool, page: int, page_size: int,  paginate: bool, exact_match: bool):
@@ -310,7 +334,8 @@ async def get_files_by_name(filename: str, include_content: bool, page: int, pag
 
         return result
     except Exception as e:
-        raise HTTPException(status_code=500, detail=str(e))
+        raise HTTPException(
+            status_code=500, detail=f"Erro ao buscar arquivos por nome: {str(e)}")
 
 
 async def get_files_by_upload_date(upload_date: str, include_content: bool, page: int, page_size: int, paginate: bool):
@@ -334,7 +359,8 @@ async def get_files_by_upload_date(upload_date: str, include_content: bool, page
 
         return result
     except Exception as e:
-        raise HTTPException(status_code=500, detail=str(e))
+        raise HTTPException(
+            status_code=500, detail=f"Erro ao buscar arquivos por data de upload: {str(e)}")
 
 
 async def get_files_by_fields(fields: Dict[str, str], page: int, page_size: int, paginate: bool):
