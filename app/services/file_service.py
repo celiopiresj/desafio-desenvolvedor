@@ -8,32 +8,43 @@ from datetime import datetime
 from database.database import db
 
 
-def decode_content(contents: bytes) -> str:
+def _decode_content(contents: bytes) -> str:
     try:
         return contents.decode('utf-8')
     except UnicodeDecodeError:
         return contents.decode('ISO-8859-1')
 
 
-async def check_file_exists(filename: str, db):
-    if await db['files'].find_one({"Filename": filename}):
+async def _check_file_exists(filename: str, db):
+    file_exists = await db['files'].find_one({"Filename": filename})
+    if file_exists:
         raise HTTPException(
             status_code=400, detail="O arquivo já foi enviado anteriormente.")
 
 
-def parse_csv_content(decoded_content: str) -> pd.DataFrame:
+def _parse_csv_content(decoded_content: str) -> pd.DataFrame:
     initial_lines = decoded_content.splitlines()[:2]
     header = 0 if "RptDt" in initial_lines[0] else 1
     return pd.read_csv(StringIO(decoded_content), sep=";", header=header, na_filter=False, low_memory=False)
 
 
-def parse_excel_content(file_content: bytes) -> pd.DataFrame:
-    initial_lines = decode_content(file_content).splitlines()[:2]
+def _parse_excel_content(file_content: bytes) -> pd.DataFrame:
+    initial_lines = _decode_content(file_content).splitlines()[:2]
     header = 0 if "RptDt" in initial_lines[0] else 1
     return pd.read_excel(BytesIO(file_content), header=header, engine='openpyxl')
 
 
-async def save_data_to_mongo(db, data: list):
+def _parse_file_content(file: UploadFile, decoded_content: str, contents: bytes) -> pd.DataFrame:
+    if file.content_type == "text/csv":
+        return _parse_csv_content(decoded_content)
+    elif file.content_type == "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet":
+        return _parse_excel_content(contents)
+    else:
+        raise HTTPException(
+            status_code=400, detail="Formato de arquivo não suportado.")
+
+
+async def _save_data_to_mongo(db, data: list):
     collection = db['files']
     batch_size = 1000
 
@@ -42,75 +53,61 @@ async def save_data_to_mongo(db, data: list):
         await collection.insert_many(batch)
 
 
+async def _save_file_to_db(db, data: list):
+    try:
+        await _save_data_to_mongo(db, data)
+    except Exception as e:
+        raise HTTPException(
+            status_code=500, detail=f"Erro ao salvar dados no MongoDB: {str(e)}")
+
+
 def convert_to_date(value):
     try:
-        if value is not None and value != "":
-
+        if value and value != "":
             date_value = pd.to_datetime(
                 value, format="%Y-%m-%d", errors='coerce')
-
             if pd.isnull(date_value):
                 date_value = pd.to_datetime(
                     value, format="%d/%m/%Y", errors='coerce')
-
-            if pd.isnull(date_value):
-                return ""
-            return date_value
+            return "" if pd.isnull(date_value) else date_value
         return ""
     except Exception:
-        # Se houver qualquer outro erro, retorna uma string vazia
         return ""
+
+
+def _convert_columns_to_date(df: pd.DataFrame, columns_to_convert: list):
+    df[columns_to_convert] = df[columns_to_convert].apply(
+        lambda col: col.apply(convert_to_date))
+
+
+def _get_current_date() -> pd.Timestamp:
+    local_tz = pytz.timezone("America/Sao_Paulo")
+    date_string = datetime.now().astimezone(local_tz).strftime("%Y-%m-%d")
+    return pd.to_datetime(date_string, format="%Y-%m-%d", errors='coerce')
 
 
 async def save_file(file: UploadFile):
     if not file:
         raise HTTPException(status_code=400, detail="Nenhum arquivo enviado.")
 
-    await check_file_exists(file.filename, db)
+    await _check_file_exists(file.filename, db)
 
     contents = await file.read()
-    decoded_content = decode_content(contents)
-
-    if file.content_type == "text/csv":
-        try:
-            df = parse_csv_content(decoded_content)
-        except pd.errors.ParserError as e:
-            raise HTTPException(
-                status_code=400, detail=f"Erro ao analisar o arquivo CSV: {str(e)}")
-    elif file.content_type == "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet":
-        try:
-            df = parse_excel_content(contents)
-        except Exception as e:
-            raise HTTPException(
-                status_code=400, detail=f"Erro ao analisar o arquivo Excel: {str(e)}")
-    else:
-        raise HTTPException(
-            status_code=400, detail="Formato de arquivo não suportado.")
+    decoded_content = _decode_content(contents)
+    df = _parse_file_content(file, decoded_content, contents)
 
     df["Filename"] = file.filename
+    df["Upload_date"] = _get_current_date()
 
-    local_tz = pytz.timezone("America/Sao_Paulo")
-    date = datetime.now()
-    date_string = date.astimezone(local_tz).strftime("%Y-%m-%d")
-    df["Upload_date"] = pd.to_datetime(
-        date_string, format="%Y-%m-%d", errors='coerce')
-
-    # converter string para date
-    columns_to_convert = [
+    _convert_columns_to_date(df, columns_to_convert=[
         "RptDt", "XprtnDt", "TradgStartDt", "TradgEndDt",
         "DlvryNtceStartDt", "DlvryNtceEndDt", "OpngPosLmtDt", "CorpActnStartDt"
-    ]
-
-    df[columns_to_convert] = df[columns_to_convert].apply(
-        lambda col: col.apply(convert_to_date))
+    ])
 
     data = df.to_dict(orient='records')
-    try:
-        await save_data_to_mongo(db, data)
-        return {"detail": "Arquivo enviado e dados salvos com sucesso."}
-    except Exception as e:
-        raise HTTPException(
-            status_code=500, detail=f"Erro ao salvar dados no MongoDB: {str(e)}")
+    await _save_file_to_db(db, data)
+
+    return {"detail": "Arquivo enviado e dados salvos com sucesso."}
 
 
 def format_date(field_name, value: str):
@@ -145,28 +142,6 @@ def format_fields(data_list):
     return data_list
 
 
-async def paginate_files(page: int, page_size: int):
-
-    pipeline = [
-        {"$sort": {"RptDt": -1}},
-        {"$skip": (page - 1) * page_size},
-        {"$limit": page_size},
-        {"$project": {"_id": 0, "Filename": 0, "Upload_date": 0}}
-    ]
-
-    result = await db["files"].aggregate(pipeline).to_list(length=page_size)
-
-    total_documents = await db["files"].count_documents({})
-    total_pages = (total_documents + page_size - 1) // page_size
-
-    return {
-        "current_page": page,
-        "total_pages": total_pages,
-        "page_size": page_size,
-        "data": format_fields(result)
-    }
-
-
 async def get_distinct_fields(search_field: str, value: str, exact_match: bool = True):
     print(value)
     if exact_match:
@@ -191,28 +166,48 @@ async def get_distinct_fields(search_field: str, value: str, exact_match: bool =
     return result
 
 
-async def paginate_file_by_name(filename: str, page: int, page_size: int, exact_match: bool):
-
-    files = await get_distinct_fields(
-        search_field="Filename",
-        value=filename,
+async def _get_files_by_field(field: str, value: str, exact_match: bool = True):
+    return await get_distinct_fields(
+        search_field=field,
+        value=value,
         exact_match=exact_match
     )
 
+
+def _build_pagination_pipeline(filename: str, page: int, page_size: int):
+    return [
+        {"$match": {"Filename": filename}},
+        {"$sort": {"RptDt": -1}},
+        {"$skip": (page - 1) * page_size},
+        {"$limit": page_size},
+        {"$project": {"_id": 0, "Filename": 0, "Upload_date": 0}}
+    ]
+
+
+async def _get_aggregated_data(pipeline: list, length: int = None):
+    return await db["files"].aggregate(pipeline).to_list(length=length)
+
+
+async def _count_documents(filename: str = None):
+    query = {}
+    if filename:
+        query["Filename"] = filename
+    return await db["files"].count_documents(query)
+
+
+def _calculate_total_pages(total_documents: int, page_size: int):
+    return (total_documents + page_size - 1) // page_size
+
+
+async def _paginate_and_format_files(files: list, page: int, page_size: int):
     for index, file in enumerate(files):
+        pipeline = _build_pagination_pipeline(
+            file["filename"], page, page_size)
+        result = await _get_aggregated_data(pipeline, page_size)
 
-        pipeline = [
-            {"$match": {"Filename": file["filename"]}},
-            {"$sort": {"RptDt": -1}},
-            {"$skip": (page - 1) * page_size},
-            {"$limit": page_size},
-            {"$project": {"_id": 0, "Filename": 0, "Upload_date": 0}}
-        ]
+        total_documents = await _count_documents(file["filename"])
+        total_pages = _calculate_total_pages(total_documents, page_size)
 
-        result = await db["files"].aggregate(pipeline).to_list(length=page_size)
-
-        total_documents = await db["files"].count_documents({"Filename": file["filename"]})
-        total_pages = (total_documents + page_size - 1) // page_size
         files[index]["total_pages"] = total_pages
         files[index]["data"] = format_fields(result)
 
@@ -220,89 +215,69 @@ async def paginate_file_by_name(filename: str, page: int, page_size: int, exact_
         "files_found": len(files),
         "current_page": page,
         "page_size": page_size,
-        "filename_search": filename,
         "result": files
     }
+
+
+def _build_filter_pipeline(filename: str):
+    return [
+        {"$match": {"Filename": filename}},
+        {"$project": {"_id": 0, "Filename": 0, "Upload_date": 0}}
+    ]
+
+
+async def _format_filtered_files(files: list):
+    for index, file in enumerate(files):
+        pipeline = _build_filter_pipeline(file["filename"])
+        result = await _get_aggregated_data(pipeline)
+
+        files[index]["data"] = format_fields(result)
+
+    return {
+        "files_found": len(files),
+        "result": files
+    }
+
+
+async def paginate_files(page: int, page_size: int):
+
+    pipeline = [
+        {"$sort": {"RptDt": -1}},
+        {"$skip": (page - 1) * page_size},
+        {"$limit": page_size},
+        {"$project": {"_id": 0, "Filename": 0, "Upload_date": 0}}
+    ]
+
+    result = await _get_aggregated_data(pipeline, page_size)
+    total_documents = await _count_documents()
+    total_pages = _calculate_total_pages(total_documents, page_size)
+
+    return {
+        "current_page": page,
+        "total_pages": total_pages,
+        "page_size": page_size,
+        "data": format_fields(result)
+    }
+
+
+async def paginate_file_by_name(filename: str, page: int, page_size: int, exact_match: bool):
+    files = await _get_files_by_field("Filename", filename, exact_match)
+    return await _paginate_and_format_files(files, page, page_size)
 
 
 async def filter_files_by_name(filename: str, exact_match: bool):
-
-    files = await get_distinct_fields(
-        search_field="Filename",
-        value=filename,
-        exact_match=exact_match
-    )
-
-    for index, file in enumerate(files):
-        pipeline = [
-            {"$match": {"Filename": file["filename"]}},
-            {"$project": {"_id": 0, "Filename": 0, "Upload_date": 0}}
-        ]
-
-        result = await db["files"].aggregate(pipeline).to_list()
-        files[index]["data"] = format_fields(result)
-
-    return {
-        "files_found": len(files),
-        "filename_search": filename,
-        "result": files
-    }
+    files = await _get_files_by_field("Filename", filename, exact_match)
+    return await _format_filtered_files(files)
 
 
 async def paginate_file_by_upload_date(upload_date: str, page: int, page_size: int):
-
-    files = await get_distinct_fields(
-        search_field="Upload_date",
-        value=upload_date
-    )
-
-    for index, file in enumerate(files):
-
-        pipeline = [
-            {"$match": {"Filename": file["filename"]}},
-            {"$sort": {"RptDt": -1}},
-            {"$skip": (page - 1) * page_size},
-            {"$limit": page_size},
-            {"$project": {"_id": 0, "Filename": 0, "Upload_date": 0}}
-        ]
-
-        result = await db["files"].aggregate(pipeline).to_list(length=page_size)
-
-        total_documents = await db["files"].count_documents({"Filename": file["filename"]})
-        total_pages = (total_documents + page_size - 1) // page_size
-        files[index]["total_pages"] = total_pages
-        files[index]["data"] = format_fields(result)
-
-    return {
-        "files_found": len(files),
-        "current_page": page,
-        "page_size": page_size,
-        "upload_date_search": upload_date,
-        "result": files
-    }
+    files = await _get_files_by_field("Upload_date", upload_date)
+    return await _paginate_and_format_files(files, page, page_size)
 
 
 async def filter_files_by_upload_date(upload_date: str):
-
-    files = await get_distinct_fields(
-        search_field="Upload_date",
-        value=upload_date,
-    )
-
-    for index, file in enumerate(files):
-        pipeline = [
-            {"$match": {"Filename": file["filename"]}},
-            {"$project": {"_id": 0, "Filename": 0, "Upload_date": 0}}
-        ]
-
-        result = await db["files"].aggregate(pipeline).to_list()
-        files[index]["data"] = format_fields(result)
-
-    return {
-        "files_found": len(files),
-        "upload_date_search": upload_date,
-        "result": files
-    }
+    files = await _get_files_by_field("Upload_date", upload_date)
+    return await _format_filtered_files(files)
 
 
 async def get_files(page: int, page_size: int):

@@ -1,21 +1,29 @@
 from fastapi import APIRouter, UploadFile, File, Request
-from fastapi.responses import JSONResponse
+from fastapi.responses import JSONResponse, RedirectResponse
 from typing import Dict
 from services.file_service import save_file, get_files, get_files_by_name, get_files_by_upload_date, get_files_by_fields
 
 router = APIRouter()
 
 
-@router.post("/upload/", status_code=201)
-async def upload_file(file: UploadFile = File(...)):
-    result = await save_file(file)
-    return JSONResponse(content=result)
+@router.get("/")
+def read_root():
+    """
+    Fetch a single recipe by ID
+    """
+    return RedirectResponse("/docs")
 
 
 @router.get("/files/", status_code=200)
 async def list_files(page: int = 1, page_size: int = 10):
     results = await get_files(page, page_size)
     return {"files": results}
+
+
+@router.post("/files/upload/", status_code=201)
+async def upload_file(file: UploadFile = File(...)):
+    result = await save_file(file)
+    return JSONResponse(content=result)
 
 
 @router.get("/files/filename/{filename}", status_code=200)
