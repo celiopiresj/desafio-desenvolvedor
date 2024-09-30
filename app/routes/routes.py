@@ -2,8 +2,7 @@ from fastapi import APIRouter, UploadFile, File, Query
 from fastapi.responses import JSONResponse, RedirectResponse
 from model.model import FilterParams
 from typing import Dict, Annotated
-from services.file_service import save_file, get_files, get_files_by_name, get_files_by_upload_date, get_files_by_fields, delete_file_by_filename
-
+from services.file_service import save_file, get_files, get_history_files, get_files_by_name, get_files_by_upload_date, get_files_by_fields, delete_file_by_filename
 from pydantic import BaseModel, Field
 from typing_extensions import Annotated
 
@@ -27,6 +26,20 @@ async def list_files(
     - **page_size**: Número de arquivos por página.
     """
     results = await get_files(page, page_size)
+    return {"files": results}
+
+
+@router.get("/files/history", status_code=200)
+async def list_history_files(
+    page: int = Query(1, description="Número da página a ser exibida."),
+    page_size: int = Query(10, description="Número de arquivos por página.")
+):
+    """Lista todo o histórico de arquivos.
+
+    - **page**: Número da página a ser exibida.
+    - **page_size**: Número de arquivos por página.
+    """
+    results = await get_history_files(page, page_size)
     return {"files": results}
 
 

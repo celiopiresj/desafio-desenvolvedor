@@ -284,6 +284,37 @@ async def paginate_files(page: int, page_size: int):
     }
 
 
+async def paginate_history_files(page: int, page_size: int):
+
+    pipeline = [
+        {"$sort": {"Upload_date": -1}},
+        {"$group": {"_id": "$Filename", "upload_date": {"$first": "$Upload_date"}}},
+        {"$project": {"filename": "$_id", "_id": 0, "upload_date": {
+            "$dateToString": {
+                "format": "%Y-%m-%d",
+                "date": "$upload_date"
+            }
+        }}}
+    ]
+
+    result = await _get_aggregated_data(pipeline, page_size)
+
+    total_count_result = await db["files"].aggregate([
+        {"$group": {"_id": "$Filename"}},
+        {"$count": "total"}
+    ]).to_list(length=None)
+
+    total_documents = total_count_result[0]["total"] if total_count_result else 0
+    total_pages = _calculate_total_pages(total_documents, page_size)
+
+    return {
+        "current_page": page,
+        "total_pages": total_pages,
+        "page_size": page_size,
+        "data": result
+    }
+
+
 async def paginate_file_by_name(filename: str, page: int, page_size: int, exact_match: bool):
     files = await _get_files_by_field("Filename", filename, exact_match)
     return await _paginate_and_format_files(files, page, page_size)
@@ -356,6 +387,13 @@ async def get_files(page: int, page_size: int):
         return await paginate_files(page, page_size)
     except Exception as e:
         error_handler(e, "Erro ao buscar arquivos")
+
+
+async def get_history_files(page: int, page_size: int):
+    try:
+        return await paginate_history_files(page, page_size)
+    except Exception as e:
+        error_handler(e, "Erro ao buscar historico de arquivos")
 
 
 async def get_files_by_name(filename: str, include_content: bool, page: int, page_size: int,  paginate: bool, exact_match: bool):
